@@ -34,7 +34,7 @@ See `.env.example`. Production requires HTTPS `APP_ORIGIN`, `NODE_ENV=production
 | Area | Routes | Access |
 |---|---|---|
 | Health | `GET /health/live`, `GET /health/ready` | Public status only |
-| Session | `GET /api/v1/csrf`, `POST/GET/DELETE /api/v1/session`, `POST /api/v1/password` | Session lifecycle |
+| Session | `GET /api/v1/csrf`, `POST/GET/DELETE /api/v1/session`, `PUT /api/v1/password` | Session lifecycle |
 | Students | `GET/POST /api/v1/students`, `GET/PATCH/DELETE /api/v1/students/:id`, `GET /api/v1/students/:id/enrollments` | Authenticated, scoped; role restrictions for writes/history |
 | Classes | `GET/POST /api/v1/classes`, `GET /api/v1/classes/:id/roster`, `GET/PUT /api/v1/classes/:id/teachers` | Authenticated; teacher assignment admin-only |
 | Staff | `GET /api/v1/users?role=teacher` | Owner/admin |

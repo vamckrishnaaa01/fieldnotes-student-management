@@ -11,16 +11,16 @@ async function bootstrap() {
     throw new Error('Set ADMIN_EMAIL, ADMIN_NAME, SCHOOL_NAME, and a unique ADMIN_PASSWORD (16–128 characters) in the secret environment.');
   }
   const passwordHash = await hashPassword(password);
+  const schoolId = randomUUID();
   await transaction(async client => {
     const existing = await client.query('SELECT 1 FROM users WHERE email = $1', [email]);
     if (existing.rowCount) throw new Error('An account already exists for ADMIN_EMAIL; bootstrap stopped without changing it.');
-    const schoolId = randomUUID();
     const userId = randomUUID();
     await client.query('INSERT INTO schools (id, name) VALUES ($1, $2)', [schoolId, schoolName]);
     await client.query('INSERT INTO users (id, email, full_name, password_hash) VALUES ($1, $2, $3, $4)', [userId, email, fullName, passwordHash]);
     await client.query('INSERT INTO school_memberships (school_id, user_id, role) VALUES ($1, $2, $3)', [schoolId, userId, 'owner']);
   });
-  process.stdout.write('Initial school owner created. Remove bootstrap secrets from the environment.\n');
+  process.stdout.write(`Initial school owner created. SCHOOL_ID=${schoolId}. Remove bootstrap secrets from the environment.\n`);
 }
 
 bootstrap().catch(error => {
