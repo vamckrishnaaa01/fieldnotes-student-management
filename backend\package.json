@@ -1,0 +1,8 @@
+{
+  "name": "fieldnotes-school-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local API backend for the Fieldnotes student management prototype",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
+}
