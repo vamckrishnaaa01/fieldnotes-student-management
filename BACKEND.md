@@ -123,3 +123,4 @@ backend/src/main/resources/
   application.yml
   db/migration/ # versioned SQL migrations
 ```
+

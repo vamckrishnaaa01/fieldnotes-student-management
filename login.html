@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f1e9">
+  <title>Sign in — Fieldnotes</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Oswald:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/auth.css">
+  <script src="/login.js" defer></script>
+</head>
+<body class="login-page">
+  <main class="login-shell">
+    <a class="brand login-brand" href="/login.html" aria-label="Fieldnotes home"><span class="brand-mark">F<span>.</span></span><span class="brand-name">FIELD<br>NOTES<span class="brand-sub">SCHOOL OFFICE</span></span></a>
+    <section class="login-card" aria-labelledby="loginTitle">
+      <p class="eyebrow"><span class="live-dot"></span> SCHOOL OFFICE <span class="eyebrow-line"></span> SECURE SIGN IN</p>
+      <h1 id="loginTitle">Welcome<br><em>back.</em></h1>
+      <p class="welcome-copy">Sign in with your school account to continue.</p>
+      <form id="loginForm" class="login-form">
+        <label for="email">EMAIL ADDRESS</label>
+        <input id="email" name="email" type="email" autocomplete="username" maxlength="254" required>
+        <label for="password">PASSWORD</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" maxlength="128" required>
+        <div id="schoolChoice" hidden>
+          <label for="schoolId">SCHOOL</label>
+          <select id="schoolId" name="schoolId" required></select>
+        </div>
+        <p id="loginError" class="login-error" role="alert" hidden></p>
+        <button class="add-button login-submit" type="submit">SIGN IN <span>→</span></button>
+        <p class="login-help">Your school administrator provides your account access.</p>
+      </form>
+    </section>
+    <footer class="login-footer">FIELDNOTES <i>✳</i> MADE FOR THE PEOPLE WHO MAKE SCHOOL.</footer>
+  </main>
+</body>
+</html>
+
