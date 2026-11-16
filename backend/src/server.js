@@ -348,24 +348,16 @@ app.get('/api/v1/students/:id/enrollments', { preHandler: requireRoles('owner', 
   return { data: result.rows, count: result.rowCount };
 });
 
-app.patch('/api/v1/students/:id', { preHandler: requireRoles('owner', 'admin', 'teacher'), schema: {
+app.patch('/api/v1/students/:id', { preHandler: requireRoles('owner', 'admin'), schema: {
   params: { type: 'object', properties: { id: uuid }, required: ['id'], ...noAdditional },
   body: { type: 'object', minProperties: 1, properties: { name: { type: 'string', minLength: 1, maxLength: 160 }, classGroupId: uuid, status: { type: 'string', enum: ['enrolled', 'withdrawn', 'graduated'] } }, ...noAdditional },
 } }, async (request, reply) => {
   const result = await transaction(async client => {
     const current = await client.query('SELECT year_group, class_group_id, status FROM students WHERE school_id = $1 AND id = $2 FOR UPDATE', [request.auth.school_id, request.params.id]);
     if (!current.rowCount) return null;
-    if (request.auth.role === 'teacher') {
-      const assigned = await client.query('SELECT 1 FROM class_memberships WHERE school_id = $1 AND user_id = $2 AND class_group_id = $3', [request.auth.school_id, request.auth.user_id, current.rows[0].class_group_id]);
-      if (!assigned.rowCount) { const error = new Error('You can only update students in your assigned classes.'); error.statusCode = 403; throw error; }
-    }
     if (request.body.classGroupId) {
       const group = await client.query('SELECT id, year_group FROM class_groups WHERE school_id = $1 AND id = $2', [request.auth.school_id, request.body.classGroupId]);
       if (!group.rowCount || group.rows[0].year_group !== current.rows[0].year_group) { const error = new Error('Choose a class from the student’s year group.'); error.statusCode = 422; throw error; }
-      if (request.auth.role === 'teacher') {
-        const assigned = await client.query('SELECT 1 FROM class_memberships WHERE school_id = $1 AND user_id = $2 AND class_group_id = $3', [request.auth.school_id, request.auth.user_id, request.body.classGroupId]);
-        if (!assigned.rowCount) { const error = new Error('You can only move students to your assigned classes.'); error.statusCode = 403; throw error; }
-      }
       if (current.rows[0].class_group_id !== request.body.classGroupId && !['withdrawn', 'graduated'].includes(request.body.status)) {
         await client.query('UPDATE enrollments SET end_date = greatest(start_date, (now() AT TIME ZONE $3)::date) WHERE school_id = $1 AND student_id = $2 AND end_date IS NULL', [request.auth.school_id, request.params.id, request.auth.timezone]);
         await client.query('INSERT INTO enrollments (id, school_id, student_id, class_group_id, start_date, created_by) VALUES ($1, $2, $3, $4, (now() AT TIME ZONE $5)::date, $6)', [crypto.randomUUID(), request.auth.school_id, request.params.id, request.body.classGroupId, request.auth.timezone, request.auth.user_id]);
