@@ -21,6 +21,8 @@ Use managed PostgreSQL and Redis with TLS, a trusted HTTPS reverse proxy, a real
 
 The included Compose stack is a single-instance template. A real launch still requires infrastructure, domain and certificate setup, secret management, tested backups/restores, monitoring, and school privacy/security review. Read [SECURITY.md](SECURITY.md) before handling student records.
 
+For the prepared Render deployment, follow [DEPLOYMENT.md](DEPLOYMENT.md). It describes the Blueprint, managed services, first administrator bootstrap, and launch checklist.
+
 ## Project files
 
 - `backend/src/`: API, database access, authentication, migrations, and account provisioning.
@@ -29,4 +31,3 @@ The included Compose stack is a single-instance template. A real launch still re
 - `login.html`, `app.js`, page HTML, `styles.css`: browser application.
 
 Health endpoints are `GET /health/live` and `GET /health/ready`; application routes are under `/api/v1/`.
-

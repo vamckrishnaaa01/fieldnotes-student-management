@@ -3,7 +3,10 @@ const { config } = require('./config');
 
 const pool = new Pool({
   connectionString: config.databaseUrl,
-  ssl: config.databaseSsl ? { rejectUnauthorized: true } : false,
+  // Render's internal Postgres certificate is self-signed. `require` still
+  // encrypts the connection while skipping CA validation; `verify-full` keeps
+  // strict certificate verification for providers with a trusted CA.
+  ssl: config.databaseSsl ? { rejectUnauthorized: config.databaseSslMode !== 'require' } : false,
   max: config.databasePoolSize,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,
@@ -33,4 +36,3 @@ async function transaction(work) {
 }
 
 module.exports = { pool, transaction };
-

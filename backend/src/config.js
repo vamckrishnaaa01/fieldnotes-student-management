@@ -11,11 +11,13 @@ const config = {
   production,
   host: process.env.HOST || (production ? '0.0.0.0' : '127.0.0.1'),
   port: Number(process.env.PORT || 3000),
-  appOrigin: process.env.APP_ORIGIN || 'http://localhost:3000',
+  appOrigin: process.env.APP_ORIGIN || (process.env.RENDER_EXTERNAL_HOSTNAME ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : 'http://localhost:3000'),
   databaseUrl: process.env.DATABASE_URL,
   databaseSsl: process.env.DATABASE_SSL === 'true',
+  databaseSslMode: process.env.DATABASE_SSL_MODE || 'verify-full',
   databasePoolSize: Number(process.env.DATABASE_POOL_SIZE || 10),
   redisUrl: process.env.REDIS_URL,
+  redisPrivateNetwork: process.env.REDIS_PRIVATE_NETWORK === 'true',
   sessionSecret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString('base64url'),
   csrfSecret: process.env.CSRF_SECRET || crypto.randomBytes(32).toString('base64url'),
   mfaEncryptionKey: process.env.MFA_ENCRYPTION_KEY || '',
@@ -39,10 +41,13 @@ function validateConfig() {
     if (config.csrfSecret.length < 32 || !process.env.CSRF_SECRET) throw new Error('Set a different CSRF_SECRET with at least 32 characters.');
     if (config.sessionSecret === config.csrfSecret || config.sessionSecret === config.mfaEncryptionKey || config.csrfSecret === config.mfaEncryptionKey) throw new Error('SESSION_SECRET, CSRF_SECRET, and MFA_ENCRYPTION_KEY must all be different values.');
     if (!config.databaseSsl) throw new Error('DATABASE_SSL=true is required in production.');
-    if (!config.redisUrl.startsWith('rediss://')) throw new Error('REDIS_URL must use TLS (rediss://) in production.');
+    if (!['require', 'verify-full'].includes(config.databaseSslMode)) throw new Error('DATABASE_SSL_MODE must be require or verify-full in production.');
+    const redisScheme = new URL(config.redisUrl).protocol;
+    if (redisScheme !== 'rediss:' && !(redisScheme === 'redis:' && config.redisPrivateNetwork)) {
+      throw new Error('Production REDIS_URL must use TLS, or use redis:// only with REDIS_PRIVATE_NETWORK=true on a trusted private network.');
+    }
     if (Buffer.from(config.mfaEncryptionKey, 'base64url').length !== 32) throw new Error('Set MFA_ENCRYPTION_KEY to a random 32-byte base64url value.');
   }
 }
 
 module.exports = { config, validateConfig };
-
