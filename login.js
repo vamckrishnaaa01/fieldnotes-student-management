@@ -2,6 +2,8 @@ const form = document.querySelector('#loginForm');
 const errorBox = document.querySelector('#loginError');
 const schoolChoice = document.querySelector('#schoolChoice');
 const schoolSelect = document.querySelector('#schoolId');
+const mfaChoice = document.querySelector('#mfaChoice');
+const mfaCode = document.querySelector('#mfaCode');
 const submitButton = form?.querySelector('[type="submit"]');
 let csrfToken = null;
 
@@ -33,6 +35,7 @@ form?.addEventListener('submit', async event => {
   submitButton.disabled = true;
   submitButton.textContent = 'SIGNING IN…';
   const body = Object.fromEntries(new FormData(form).entries());
+  if (!body.mfaCode) delete body.mfaCode;
   try {
     const { response, payload } = await jsonRequest('/api/v1/session', {
       method: 'POST',
@@ -53,6 +56,11 @@ form?.addEventListener('submit', async event => {
       return;
     }
     if (!response.ok) {
+      if (['mfa_required', 'mfa_invalid'].includes(payload.error?.code)) {
+        mfaChoice.hidden = false;
+        mfaCode.required = true;
+        mfaCode.focus();
+      }
       showError(payload.error?.message || 'Unable to sign in. Check your details and try again.');
       return;
     }
@@ -68,5 +76,10 @@ form?.addEventListener('submit', async event => {
   }
 });
 
-initialize();
+if (window.location.protocol === 'file:') {
+  showError('Start the backend and open http://localhost:3000/login.html to sign in.');
+  if (submitButton) submitButton.disabled = true;
+} else {
+  initialize();
+}
 

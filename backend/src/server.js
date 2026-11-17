@@ -11,7 +11,8 @@ const { config, validateConfig } = require('./config');
 const { pool, transaction } = require('./database');
 const {
   SESSION_COOKIE, CSRF_COOKIE, SAFE_METHODS, hashToken, createCsrfToken,
-  requireSameOrigin, hashPassword, verifyPassword,
+  requireSameOrigin, createTotpSecret, matchTotpStep,
+  encryptTotpSecret, decryptTotpSecret, hashPassword, verifyPassword,
 } = require('./security');
 
 validateConfig();
@@ -108,7 +109,7 @@ async function authenticate(request, reply, page = false) {
   const result = await pool.query(
     `SELECT u.id AS user_id, u.email, u.full_name, m.role,
             s.id AS school_id, s.name AS school_name, s.timezone,
-            ss.expires_at, ss.last_seen_at
+            ss.expires_at, ss.last_seen_at, u.mfa_enabled, u.password_change_required
        FROM sessions ss
        JOIN users u ON u.id = ss.user_id AND u.active = true
        JOIN school_memberships m ON m.user_id = u.id AND m.school_id = ss.school_id
@@ -123,6 +124,15 @@ async function authenticate(request, reply, page = false) {
     return;
   }
   request.auth = result.rows[0];
+  if (request.auth.password_change_required && !page) {
+    const allowed = (request.method === 'GET' && request.routeOptions.url === '/api/v1/session')
+      || (request.method === 'DELETE' && request.routeOptions.url === '/api/v1/session')
+      || (request.method === 'PUT' && request.routeOptions.url === '/api/v1/password');
+    if (!allowed) {
+      reply.code(403).send({ error: { code: 'password_change_required', message: 'Change your temporary password to continue.', requestId: request.id } });
+      return;
+    }
+  }
   if (Date.now() - new Date(request.auth.last_seen_at).getTime() > 300_000) {
     await pool.query('UPDATE sessions SET last_seen_at = now() WHERE token_hash = $1', [hashToken(rawToken)]);
   }
@@ -163,6 +173,8 @@ function safeSession(auth) {
     user: { id: auth.user_id, email: auth.email, name: auth.full_name },
     school: { id: auth.school_id, name: auth.school_name, timezone: auth.timezone },
     role: auth.role,
+    mfaEnabled: Boolean(auth.mfa_enabled),
+    passwordChangeRequired: Boolean(auth.password_change_required),
   };
 }
 
@@ -188,11 +200,12 @@ app.post('/api/v1/session', {
     email: { type: 'string', format: 'email', maxLength: 254 },
     password: { type: 'string', minLength: 1, maxLength: 128 },
     schoolId: uuid,
+    mfaCode: { type: 'string', pattern: '^\\d{6}$' },
   }, ...noAdditional } },
 }, async (request, reply) => {
   const email = request.body.email.trim().toLowerCase();
   const memberships = await pool.query(
-    `SELECT u.id AS user_id, u.email, u.full_name, u.password_hash,
+    `SELECT u.id AS user_id, u.email, u.full_name, u.password_hash, u.mfa_enabled, u.mfa_secret_enc, u.mfa_last_step,
             m.school_id, m.role, s.name AS school_name, s.timezone
        FROM users u
        JOIN school_memberships m ON m.user_id = u.id
@@ -218,12 +231,40 @@ app.post('/api/v1/session', {
     } };
   }
   const account = matches[0];
+  let mfaStep = null;
+  if (config.mfaRequired && !account.mfa_enabled) {
+    reply.code(403);
+    return { error: { code: 'mfa_enrollment_required', message: 'An administrator must enable MFA for this account before sign-in.', requestId: request.id } };
+  }
+  if (account.mfa_enabled) {
+    if (!request.body.mfaCode) {
+      reply.code(401);
+      return { error: { code: 'mfa_required', message: 'Enter the 6-digit code from your authenticator app.', requestId: request.id } };
+    }
+    try { mfaStep = matchTotpStep(decryptTotpSecret(account.mfa_secret_enc), request.body.mfaCode); } catch {}
+    if (mfaStep === null || (account.mfa_last_step !== null && mfaStep <= BigInt(account.mfa_last_step))) {
+      reply.code(401);
+      return { error: { code: 'mfa_invalid', message: 'The authenticator code is invalid or expired.', requestId: request.id } };
+    }
+  }
   const rawToken = crypto.randomBytes(32).toString('base64url');
   const auth = { ...account, timezone: account.timezone };
-  await transaction(async client => {
+  const sessionCreated = await transaction(async client => {
+    if (mfaStep !== null) {
+      const consumed = await client.query(
+        'UPDATE users SET mfa_last_step = $2 WHERE id = $1 AND (mfa_last_step IS NULL OR mfa_last_step < $2) RETURNING id',
+        [account.user_id, mfaStep.toString()],
+      );
+      if (!consumed.rowCount) return false;
+    }
     await client.query('INSERT INTO sessions (token_hash, user_id, school_id, expires_at) VALUES ($1, $2, $3, now() + interval \'8 hours\')', [hashToken(rawToken), account.user_id, account.school_id]);
     await audit(client, request, auth, 'session.created', 'session', null);
+    return true;
   });
+  if (!sessionCreated) {
+    reply.code(401);
+    return { error: { code: 'mfa_invalid', message: 'The authenticator code has already been used or expired.', requestId: request.id } };
+  }
   reply.setCookie(SESSION_COOKIE, rawToken, {
     path: '/', httpOnly: true, secure: config.production, sameSite: 'strict', maxAge: config.sessionHours * 60 * 60,
   });
@@ -231,6 +272,54 @@ app.post('/api/v1/session', {
 });
 
 app.get('/api/v1/session', { preHandler: authenticate }, async request => ({ data: safeSession(request.auth) }));
+
+app.post('/api/v1/mfa/setup', { preHandler: authenticate, config: { rateLimit: { max: 5, timeWindow: '15 minutes' } }, schema: { body: { type: 'object', required: ['currentPassword'], properties: { currentPassword: { type: 'string', minLength: 1, maxLength: 128 } }, ...noAdditional } } }, async (request, reply) => {
+  if (!config.mfaEncryptionKey) return reply.code(503).send({ error: { code: 'mfa_unavailable', message: 'MFA encryption is not configured on this server.', requestId: request.id } });
+  if (request.auth.mfa_enabled) return reply.code(409).send({ error: { code: 'mfa_already_enabled', message: 'MFA is already enabled for this account.', requestId: request.id } });
+  const user = await pool.query('SELECT password_hash, email FROM users WHERE id = $1 AND active = true', [request.auth.user_id]);
+  if (!user.rowCount || !await verifyPassword(user.rows[0].password_hash, request.body.currentPassword)) {
+    return reply.code(400).send({ error: { code: 'invalid_current_password', message: 'Current password is incorrect.', requestId: request.id } });
+  }
+  const secret = createTotpSecret();
+  const issuer = 'Fieldnotes';
+  const label = encodeURIComponent(`${issuer}:${user.rows[0].email}`);
+  const uri = `otpauth://totp/${label}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;
+  await pool.query('UPDATE users SET mfa_secret_enc = $2 WHERE id = $1', [request.auth.user_id, encryptTotpSecret(secret)]);
+  return { data: { secret, uri } };
+});
+
+app.post('/api/v1/mfa/enable', { preHandler: authenticate, config: { rateLimit: { max: 5, timeWindow: '15 minutes' } }, schema: { body: { type: 'object', required: ['code'], properties: { code: { type: 'string', pattern: '^\\d{6}$' } }, ...noAdditional } } }, async (request, reply) => {
+  const user = await pool.query('SELECT mfa_secret_enc, mfa_enabled FROM users WHERE id = $1 AND active = true', [request.auth.user_id]);
+  if (!user.rowCount || !user.rows[0].mfa_secret_enc) return reply.code(409).send({ error: { code: 'mfa_setup_required', message: 'Start MFA setup before confirming it.', requestId: request.id } });
+  if (user.rows[0].mfa_enabled) return reply.code(409).send({ error: { code: 'mfa_already_enabled', message: 'MFA is already enabled.', requestId: request.id } });
+  let mfaStep = null;
+  try { mfaStep = matchTotpStep(decryptTotpSecret(user.rows[0].mfa_secret_enc), request.body.code); } catch {}
+  if (mfaStep === null) return reply.code(400).send({ error: { code: 'mfa_invalid', message: 'The authenticator code is invalid or expired.', requestId: request.id } });
+  await transaction(async client => {
+    const enabled = await client.query('UPDATE users SET mfa_enabled = true, mfa_last_step = $2 WHERE id = $1 AND mfa_enabled = false RETURNING id', [request.auth.user_id, mfaStep.toString()]);
+    if (!enabled.rowCount) { const error = new Error('MFA enrollment changed during confirmation. Start setup again.'); error.statusCode = 409; throw error; }
+    await audit(client, request, request.auth, 'user.mfa_enabled', 'user', request.auth.user_id);
+  });
+  return { data: { enabled: true } };
+});
+
+app.post('/api/v1/mfa/disable', { preHandler: authenticate, config: { rateLimit: { max: 5, timeWindow: '15 minutes' } }, schema: { body: { type: 'object', required: ['currentPassword', 'code'], properties: { currentPassword: { type: 'string', minLength: 1, maxLength: 128 }, code: { type: 'string', pattern: '^\\d{6}$' } }, ...noAdditional } } }, async (request, reply) => {
+  const user = await pool.query('SELECT password_hash, mfa_secret_enc, mfa_enabled, mfa_last_step FROM users WHERE id = $1 AND active = true', [request.auth.user_id]);
+  if (!user.rowCount || !user.rows[0].mfa_enabled || !user.rows[0].mfa_secret_enc) return reply.code(409).send({ error: { code: 'mfa_not_enabled', message: 'MFA is not enabled for this account.', requestId: request.id } });
+  let mfaStep = null;
+  try { mfaStep = matchTotpStep(decryptTotpSecret(user.rows[0].mfa_secret_enc), request.body.code); } catch {}
+  if (!await verifyPassword(user.rows[0].password_hash, request.body.currentPassword) || mfaStep === null || (user.rows[0].mfa_last_step !== null && mfaStep <= BigInt(user.rows[0].mfa_last_step))) {
+    return reply.code(400).send({ error: { code: 'reauthentication_failed', message: 'Password or authenticator code is incorrect.', requestId: request.id } });
+  }
+  await transaction(async client => {
+    await client.query('UPDATE users SET mfa_enabled = false, mfa_secret_enc = NULL, mfa_last_step = NULL WHERE id = $1', [request.auth.user_id]);
+    await client.query('DELETE FROM sessions WHERE user_id = $1', [request.auth.user_id]);
+    await audit(client, request, request.auth, 'user.mfa_disabled', 'user', request.auth.user_id);
+  });
+  reply.clearCookie(SESSION_COOKIE, { path: '/' });
+  reply.clearCookie(CSRF_COOKIE, { path: '/' });
+  return reply.code(204).send();
+});
 
 app.delete('/api/v1/session', { preHandler: authenticate }, async (request, reply) => {
   const rawToken = request.cookies[SESSION_COOKIE];
@@ -243,7 +332,7 @@ app.delete('/api/v1/session', { preHandler: authenticate }, async (request, repl
   return reply.code(204).send();
 });
 
-app.put('/api/v1/password', { preHandler: authenticate, schema: { body: { type: 'object', required: ['currentPassword', 'newPassword'], properties: {
+app.put('/api/v1/password', { preHandler: authenticate, config: { rateLimit: { max: 5, timeWindow: '15 minutes' } }, schema: { body: { type: 'object', required: ['currentPassword', 'newPassword'], properties: {
   currentPassword: { type: 'string', minLength: 1, maxLength: 128 }, newPassword: { type: 'string', minLength: 15, maxLength: 128 },
 }, ...noAdditional } } }, async (request, reply) => {
   const account = await pool.query('SELECT password_hash FROM users WHERE id = $1 AND active = true', [request.auth.user_id]);
@@ -254,7 +343,7 @@ app.put('/api/v1/password', { preHandler: authenticate, schema: { body: { type: 
   const passwordHash = await hashPassword(request.body.newPassword);
   const rawToken = crypto.randomBytes(32).toString('base64url');
   await transaction(async client => {
-    await client.query('UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1', [request.auth.user_id, passwordHash]);
+    await client.query('UPDATE users SET password_hash = $2, password_change_required = false, updated_at = now() WHERE id = $1', [request.auth.user_id, passwordHash]);
     await client.query('DELETE FROM sessions WHERE user_id = $1', [request.auth.user_id]);
     await client.query('INSERT INTO sessions (token_hash, user_id, school_id, expires_at) VALUES ($1, $2, $3, now() + interval \'8 hours\')', [hashToken(rawToken), request.auth.user_id, request.auth.school_id]);
     await audit(client, request, request.auth, 'user.password_changed', 'user', request.auth.user_id);
@@ -330,7 +419,7 @@ app.get('/api/v1/students/:id', { preHandler: authenticate, schema: { params: { 
             st.year_group AS "yearGroup", ('Year ' || st.year_group) AS year,
             cg.name AS class, st.status, st.created_at AS "createdAt", st.updated_at AS "updatedAt"
        FROM students st LEFT JOIN class_groups cg ON cg.id = st.class_group_id AND cg.school_id = st.school_id
-      WHERE st.school_id = $1 AND st.id = $2
+      WHERE st.school_id = $1 AND st.id = $2 AND st.deleted_at IS NULL
         AND ($3 <> 'teacher' OR EXISTS (SELECT 1 FROM class_memberships cm WHERE cm.school_id = st.school_id AND cm.user_id = $4 AND cm.class_group_id = st.class_group_id))`, [request.auth.school_id, request.params.id, request.auth.role, request.auth.user_id],
   );
   if (!result.rowCount) return reply.code(404).send({ error: { code: 'not_found', message: 'Student not found.', requestId: request.id } });
@@ -353,7 +442,7 @@ app.patch('/api/v1/students/:id', { preHandler: requireRoles('owner', 'admin'), 
   body: { type: 'object', minProperties: 1, properties: { name: { type: 'string', minLength: 1, maxLength: 160 }, classGroupId: uuid, status: { type: 'string', enum: ['enrolled', 'withdrawn', 'graduated'] } }, ...noAdditional },
 } }, async (request, reply) => {
   const result = await transaction(async client => {
-    const current = await client.query('SELECT year_group, class_group_id, status FROM students WHERE school_id = $1 AND id = $2 FOR UPDATE', [request.auth.school_id, request.params.id]);
+    const current = await client.query('SELECT year_group, class_group_id, status FROM students WHERE school_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE', [request.auth.school_id, request.params.id]);
     if (!current.rowCount) return null;
     if (request.body.classGroupId) {
       const group = await client.query('SELECT id, year_group FROM class_groups WHERE school_id = $1 AND id = $2', [request.auth.school_id, request.body.classGroupId]);
@@ -385,9 +474,10 @@ app.patch('/api/v1/students/:id', { preHandler: requireRoles('owner', 'admin'), 
 
 app.delete('/api/v1/students/:id', { preHandler: requireRoles('owner', 'admin'), schema: { params: { type: 'object', properties: { id: uuid }, required: ['id'], ...noAdditional } } }, async (request, reply) => {
   const result = await transaction(async client => {
-    const updated = await client.query("UPDATE students SET status = 'withdrawn', updated_at = now() WHERE school_id = $1 AND id = $2 AND status = 'enrolled' RETURNING id", [request.auth.school_id, request.params.id]);
+    const updated = await client.query("UPDATE students SET status = 'withdrawn', deleted_at = now(), updated_at = now() WHERE school_id = $1 AND id = $2 AND deleted_at IS NULL RETURNING id", [request.auth.school_id, request.params.id]);
     if (!updated.rowCount) return false;
-    await audit(client, request, request.auth, 'student.withdrawn', 'student', request.params.id);
+    await client.query('UPDATE enrollments SET end_date = greatest(start_date, (now() AT TIME ZONE $3)::date) WHERE school_id = $1 AND student_id = $2 AND end_date IS NULL', [request.auth.school_id, request.params.id, request.auth.timezone]);
+    await audit(client, request, request.auth, 'student.deleted', 'student', request.params.id);
     return true;
   });
   if (!result) return reply.code(404).send({ error: { code: 'not_found', message: 'Student not found.', requestId: request.id } });

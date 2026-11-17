@@ -18,6 +18,8 @@ const config = {
   redisUrl: process.env.REDIS_URL,
   sessionSecret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString('base64url'),
   csrfSecret: process.env.CSRF_SECRET || crypto.randomBytes(32).toString('base64url'),
+  mfaEncryptionKey: process.env.MFA_ENCRYPTION_KEY || '',
+  mfaRequired: production ? process.env.MFA_REQUIRED !== 'false' : process.env.MFA_REQUIRED === 'true',
   trustProxy,
   sessionHours: 8,
 };
@@ -35,8 +37,10 @@ function validateConfig() {
     if (!config.appOrigin.startsWith('https://')) throw new Error('APP_ORIGIN must use HTTPS in production.');
     if (config.sessionSecret.length < 32 || !process.env.SESSION_SECRET) throw new Error('Set a unique SESSION_SECRET with at least 32 characters.');
     if (config.csrfSecret.length < 32 || !process.env.CSRF_SECRET) throw new Error('Set a different CSRF_SECRET with at least 32 characters.');
+    if (config.sessionSecret === config.csrfSecret || config.sessionSecret === config.mfaEncryptionKey || config.csrfSecret === config.mfaEncryptionKey) throw new Error('SESSION_SECRET, CSRF_SECRET, and MFA_ENCRYPTION_KEY must all be different values.');
     if (!config.databaseSsl) throw new Error('DATABASE_SSL=true is required in production.');
     if (!config.redisUrl.startsWith('rediss://')) throw new Error('REDIS_URL must use TLS (rediss://) in production.');
+    if (Buffer.from(config.mfaEncryptionKey, 'base64url').length !== 32) throw new Error('Set MFA_ENCRYPTION_KEY to a random 32-byte base64url value.');
   }
 }
 

@@ -28,6 +28,92 @@ function verifyCsrfToken(token, sessionToken) {
   return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 }
 
+const base32Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+function base32Encode(bytes) {
+  let bits = 0;
+  let value = 0;
+  let output = '';
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      output += base32Alphabet[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits) output += base32Alphabet[(value << (5 - bits)) & 31];
+  return output;
+}
+
+function base32Decode(value) {
+  let bits = 0;
+  let buffer = 0;
+  const bytes = [];
+  for (const char of value.replace(/=+$/, '').toUpperCase()) {
+    const index = base32Alphabet.indexOf(char);
+    if (index < 0) throw new Error('Invalid MFA secret.');
+    buffer = (buffer << 5) | index;
+    bits += 5;
+    if (bits >= 8) {
+      bytes.push((buffer >>> (bits - 8)) & 255);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(bytes);
+}
+
+function createTotpSecret() {
+  return base32Encode(crypto.randomBytes(20));
+}
+
+function generateTotpCode(secret, timestamp = Date.now()) {
+  const counter = BigInt(Math.floor(timestamp / 30_000));
+  const counterBytes = Buffer.alloc(8);
+  counterBytes.writeBigUInt64BE(counter);
+  const digest = crypto.createHmac('sha1', base32Decode(secret)).update(counterBytes).digest();
+  const offset = digest[digest.length - 1] & 15;
+  const binary = digest.readUInt32BE(offset) & 0x7fffffff;
+  return String(binary % 1_000_000).padStart(6, '0');
+}
+
+function matchTotpStep(secret, code, timestamp = Date.now()) {
+  if (typeof code !== 'string' || !/^\d{6}$/.test(code)) return null;
+  const supplied = Buffer.from(code);
+  const currentStep = Math.floor(timestamp / 30_000);
+  for (const drift of [-1, 0, 1]) {
+    const step = currentStep + drift;
+    if (step < 0) continue;
+    const expected = Buffer.from(generateTotpCode(secret, step * 30_000));
+    if (crypto.timingSafeEqual(supplied, expected)) return BigInt(step);
+  }
+  return null;
+}
+
+function verifyTotpCode(secret, code, timestamp = Date.now()) {
+  return matchTotpStep(secret, code, timestamp) !== null;
+}
+
+function mfaKey() {
+  const key = Buffer.from(config.mfaEncryptionKey, 'base64url');
+  if (key.length !== 32) throw new Error('MFA_ENCRYPTION_KEY must encode exactly 32 random bytes.');
+  return key;
+}
+
+function encryptTotpSecret(secret) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', mfaKey(), iv);
+  const ciphertext = Buffer.concat([cipher.update(secret, 'utf8'), cipher.final()]);
+  return [iv, cipher.getAuthTag(), ciphertext].map(part => part.toString('base64url')).join('.');
+}
+
+function decryptTotpSecret(encrypted) {
+  const [encodedIv, encodedTag, encodedCiphertext, extra] = String(encrypted).split('.');
+  if (!encodedIv || !encodedTag || !encodedCiphertext || extra) throw new Error('Stored MFA secret is invalid.');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', mfaKey(), Buffer.from(encodedIv, 'base64url'));
+  decipher.setAuthTag(Buffer.from(encodedTag, 'base64url'));
+  return Buffer.concat([decipher.update(Buffer.from(encodedCiphertext, 'base64url')), decipher.final()]).toString('utf8');
+}
+
 function requireSameOrigin(request, reply) {
   const origin = request.headers.origin;
   if (origin !== config.appOrigin) {
@@ -60,6 +146,7 @@ async function verifyPassword(hash, password) {
 
 module.exports = {
   SESSION_COOKIE, CSRF_COOKIE, SAFE_METHODS, hashToken, createCsrfToken,
-  requireSameOrigin, hashPassword, verifyPassword,
+  verifyCsrfToken, requireSameOrigin, createTotpSecret, generateTotpCode, matchTotpStep, verifyTotpCode,
+  encryptTotpSecret, decryptTotpSecret, hashPassword, verifyPassword,
 };
 

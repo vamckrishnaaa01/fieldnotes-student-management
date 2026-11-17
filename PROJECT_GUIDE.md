@@ -30,7 +30,8 @@ FRONTEND.md         # Browser architecture and data rules
 
 - The API is the source of truth; the browser does not persist student records in local storage.
 - Sign-in is required for application pages. The API enforces permissions independently of UI controls.
-- Staff accounts are operator-provisioned. There is no public signup flow.
+- Staff accounts are operator-provisioned; temporary passwords must be changed at first sign-in.
+- Staff can enroll in TOTP MFA from account controls; production can enforce enrollment using `MFA_REQUIRED=true`.
 - `GET /health/live` checks process liveness and `GET /health/ready` checks the database and Redis.
 - Production needs the HTTPS origin, trusted proxy, TLS data services, secrets, backups, monitoring, and privacy review described in [SECURITY.md](SECURITY.md).
 

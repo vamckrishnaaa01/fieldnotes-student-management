@@ -8,9 +8,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Oswald:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css">
-  <link rel="stylesheet" href="/auth.css">
-  <script src="/login.js" defer></script>
+  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./auth.css">
+  <script src="./login.js" defer></script>
 </head>
 <body class="login-page">
   <main class="login-shell">
@@ -24,6 +24,10 @@
         <input id="email" name="email" type="email" autocomplete="username" maxlength="254" required>
         <label for="password">PASSWORD</label>
         <input id="password" name="password" type="password" autocomplete="current-password" maxlength="128" required>
+        <div id="mfaChoice" hidden>
+          <label for="mfaCode">AUTHENTICATOR CODE</label>
+          <input id="mfaCode" name="mfaCode" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6">
+        </div>
         <div id="schoolChoice" hidden>
           <label for="schoolId">SCHOOL</label>
           <select id="schoolId" name="schoolId" required></select>

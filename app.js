@@ -98,6 +98,42 @@ function applySchoolSession(session) {
       notify('Password changed. Other sessions were signed out.');
     }));
   }
+  if (profile && !document.querySelector('#mfaButton')) {
+    const mfaButton = element('button', 'text-link account-password-button', session.mfaEnabled ? 'Two-step sign-in enabled · Manage' : 'Enable two-step sign-in');
+    mfaButton.id = 'mfaButton';
+    mfaButton.type = 'button';
+    profile.append(mfaButton);
+    mfaButton.addEventListener('click', () => {
+      if (currentSession.mfaEnabled) {
+        openFormDialog('Disable two-step sign-in', [
+          { name: 'currentPassword', label: 'Current password', type: 'password', autocomplete: 'current-password' },
+          { name: 'code', label: '6-digit authenticator code', type: 'text', maxLength: 6 },
+        ], async values => {
+          await api('/mfa/disable', { method: 'POST', body: JSON.stringify(values) });
+          window.location.replace('/login.html');
+        });
+        return;
+      }
+      openFormDialog('Set up two-step sign-in', [
+        { name: 'currentPassword', label: 'Current password', type: 'password', autocomplete: 'current-password' },
+      ], async values => {
+        const setup = await api('/mfa/setup', { method: 'POST', body: JSON.stringify(values) });
+        setTimeout(() => {
+          const fields = openFormDialog('Confirm your authenticator', [
+            { name: 'secret', label: 'Setup key · enter this in your authenticator app', type: 'text', required: false, readOnly: true },
+            { name: 'code', label: '6-digit authenticator code', type: 'text', maxLength: 6 },
+          ], async confirmation => {
+            await api('/mfa/enable', { method: 'POST', body: JSON.stringify({ code: confirmation.code }) });
+            currentSession.mfaEnabled = true;
+            mfaButton.textContent = 'Two-step sign-in enabled · Manage';
+            notify('Two-step sign-in is enabled. Keep your authenticator available.');
+          });
+          fields.secret.value = setup.secret;
+          fields.secret.select();
+        }, 0);
+      });
+    });
+  }
 }
 
 async function initialize() {
@@ -105,6 +141,19 @@ async function initialize() {
     await csrfReady;
     const session = await api('/session');
     applySchoolSession(session);
+    if (session.passwordChangeRequired) {
+      openFormDialog('Set a new password to continue', [
+        { name: 'currentPassword', label: 'Temporary password', type: 'password', autocomplete: 'current-password' },
+        { name: 'newPassword', label: 'New password · 15 characters minimum', type: 'password', autocomplete: 'new-password', minLength: 15 },
+      ], async values => {
+        const result = await api('/password', { method: 'PUT', body: JSON.stringify(values) });
+        csrfToken = result.csrfToken;
+        currentSession.passwordChangeRequired = false;
+        notify('Password changed. Your account is ready.');
+        setTimeout(() => Promise.all([loadStudents(), setupAttendance(), setupClasses(), setupCalendar(), updateAttendanceCharts()]).catch(error => notify(error.message)), 0);
+      });
+      return false;
+    }
     return true;
   } catch (error) {
     if (window.location.pathname !== '/login.html') window.location.replace('/login.html');
@@ -328,7 +377,7 @@ async function setupClasses() {
           }], async values => {
             await api(`/classes/${group.id}/teachers`, { method: 'PUT', body: JSON.stringify({ userIds: values.userIds }) });
             await setupClasses(); notify('Teacher assignments saved.');
-          }]);
+          });
           const selected = new Set(assigned.map(teacher => teacher.id));
           [...fields.userIds.options].forEach(option => { option.selected = selected.has(option.value); });
         } catch (error) { notify(error.message); }
@@ -359,6 +408,8 @@ function openFormDialog(title, fields, onSubmit) {
       field.options.forEach(option => { const node = element('option', '', option.label); node.value = option.value; input.append(node); });
     }
     if (field.type === 'password') { input.type = 'password'; input.autocomplete = field.autocomplete || 'current-password'; }
+    if (field.type === 'text') input.type = 'text';
+    if (field.readOnly) input.readOnly = true;
     if (field.minLength) input.minLength = field.minLength;
     if (field.maxLength) input.maxLength = field.maxLength;
     label.append(input); form.append(label); controls[field.name] = input;

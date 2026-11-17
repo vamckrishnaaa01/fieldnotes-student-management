@@ -1,6 +1,6 @@
 # Front end
 
-The browser app is served by Fastify on the same origin. Sign-in is at `/login.html`; protected pages redirect to sign-in. `app.js` calls `/api/v1` using session cookies and CSRF tokens. Student data and credentials are not stored in browser local storage. Standalone Live Server is not supported because it bypasses the session and CSRF model.
+The browser app is served by Fastify on the same origin. Sign-in is at `/login.html`; protected pages redirect to sign-in. Sign-in supports TOTP authenticator codes when MFA is enabled. Staff can enroll or disable MFA and change passwords through their account controls. `app.js` calls `/api/v1` using session cookies and CSRF tokens. Student data and credentials are not stored in browser local storage. Standalone Live Server is not supported because it bypasses the session and CSRF model.
 
 ## Pages
 

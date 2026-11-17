@@ -1,6 +1,7 @@
 const { randomUUID } = require('node:crypto');
 const { pool, transaction } = require('./database');
 const { hashPassword } = require('./security');
+const { verifySchoolOperator } = require('./operator-auth');
 
 async function createUser() {
   const schoolId = String(process.env.SCHOOL_ID || '').trim();
@@ -14,10 +15,16 @@ async function createUser() {
   const passwordHash = await hashPassword(password);
   const userId = randomUUID();
   await transaction(async client => {
+    const operatorId = await verifySchoolOperator(client, schoolId);
     const school = await client.query('SELECT 1 FROM schools WHERE id = $1', [schoolId]);
     if (!school.rowCount) throw new Error('SCHOOL_ID was not found.');
-    await client.query('INSERT INTO users (id, email, full_name, password_hash) VALUES ($1, $2, $3, $4)', [userId, email, name, passwordHash]);
+    await client.query('INSERT INTO users (id, email, full_name, password_hash, password_change_required) VALUES ($1, $2, $3, $4, true)', [userId, email, name, passwordHash]);
     await client.query('INSERT INTO school_memberships (school_id, user_id, role) VALUES ($1, $2, $3)', [schoolId, userId, role]);
+    await client.query(
+      `INSERT INTO audit_events (school_id, actor_id, action, entity_type, entity_id, request_id, details)
+       VALUES ($1, $2, 'user.created', 'user', $3, $4, $5::jsonb)`,
+      [schoolId, operatorId, userId, `operator-create-${randomUUID()}`, JSON.stringify({ role })],
+    );
   });
   process.stdout.write(`Created ${role} account ${userId}. Share the account credentials through your approved secure channel.\n`);
 }
